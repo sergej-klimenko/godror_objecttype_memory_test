@@ -8,6 +8,7 @@ docker-run:
 	docker build -t godror_test .
 	docker run -it --rm --name godror_test --network="host" \
 	-e GODROR_TEST_DSN="$(GODROR_TEST_DSN)" \
+	-e DPI_DEBUG_LEVEL=$(DPI_DEBUG_LEVEL) \
 	-e RUNS=$(RUNS) -e STEP=$(STEP) \
 	godror_test
 

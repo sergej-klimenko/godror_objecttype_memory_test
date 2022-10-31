@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -18,6 +17,8 @@ import (
 var parallel = 1
 
 func main() {
+	//godror.SetLogger(godror.NewLogfmtLogger(os.Stdout))
+
 	testConStr := os.Getenv("GODROR_TEST_DSN")
 	runs, _ := strconv.Atoi(os.Getenv("RUNS"))
 	step, _ := strconv.Atoi(os.Getenv("STEP"))
@@ -36,6 +37,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	cx, err := db.Conn(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cx.Close()
+
 	var m runtime.MemStats
 	pid := os.Getpid()
 	for loopCnt := 0; loopCnt < runs; loopCnt++ {
@@ -45,7 +52,7 @@ func main() {
 		for i := 0; i < parallel; i++ {
 			go func(wg *sync.WaitGroup) {
 				defer wg.Done()
-				err := callObjectType(ctx, db)
+				err := callObjectType(ctx, cx)
 				if err != nil {
 					log.Fatal(err)
 				}
@@ -69,36 +76,12 @@ func main() {
 	}
 }
 
-func callObjectType(ctx context.Context, db *sql.DB) error {
-	cx, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer cx.Close()
-
-	tx, err := cx.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Commit()
-
-	objType, err := godror.GetObjectType(ctx, tx, "TEST_TYPE")
+func callObjectType(ctx context.Context, cx *sql.Conn) error {
+	objType, err := godror.GetObjectType(ctx, cx, "TEST_TYPE")
 	if err != nil {
 		return err
 	}
 	defer objType.Close()
-
-	obj, err := objType.NewObject()
-	if err != nil {
-		return err
-	}
-	defer obj.Close()
-
-	rec := MyObject{Object: obj, ID: 1}
-	params := []interface{}{
-		sql.Named("rec", sql.Out{Dest: &rec, In: true}),
-	}
-	_, err = tx.ExecContext(ctx, `begin test_pkg_sample.test_record_in(:rec); end;`, params...)
 
 	return err
 }
@@ -108,19 +91,6 @@ func createTypes(ctx context.Context, db *sql.DB) error {
 		`create or replace type test_type force as object (
    	  id    number(10)
     );`,
-		`CREATE OR REPLACE PACKAGE test_pkg_sample AS
-	PROCEDURE test_record_in (
-		rec IN OUT test_type
-	);
-	END test_pkg_sample;`,
-		`CREATE OR REPLACE PACKAGE BODY test_pkg_sample AS
-	PROCEDURE test_record_in (
-		rec IN OUT test_type
-	) IS
-	BEGIN
-		rec.id := rec.id + 1;
-	END test_record_in;
-	END test_pkg_sample;`,
 	}
 	for _, ddl := range qry {
 		_, err := db.ExecContext(ctx, ddl)
@@ -144,43 +114,4 @@ func readMem(pid int32) (uint64, error) {
 
 	//fmt.Println(m)
 	return m.RSS, nil
-}
-
-type MyObject struct {
-	*godror.Object
-	ID int64
-}
-
-func (r *MyObject) Scan(src interface{}) error {
-	obj, ok := src.(*godror.Object)
-	if !ok {
-		return fmt.Errorf("Cannot scan from type %T", src)
-	}
-	id, err := obj.Get("ID")
-	if err != nil {
-		return err
-	}
-	r.ID = id.(int64)
-
-	return nil
-}
-
-// WriteObject update godror.Object with struct attributes values.
-// Implement this method if you need the record as an input parameter.
-func (r MyObject) WriteObject() error {
-	// all attributes must be initialized or you get an "ORA-21525: attribute number or (collection element at index) %s violated its constraints"
-	err := r.ResetAttributes()
-	if err != nil {
-		return err
-	}
-
-	var data godror.Data
-	err = r.GetAttribute(&data, "ID")
-	if err != nil {
-		return err
-	}
-	data.SetInt64(r.ID)
-	r.SetAttribute("ID", &data)
-
-	return nil
 }
