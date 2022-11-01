@@ -8,22 +8,17 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/godror/godror"
 	"github.com/shirou/gopsutil/process"
 )
 
-var (
-	parallel             = 1
-	standaloneConnection = false
-)
-
 func main() {
 	testConStr := os.Getenv("GODROR_TEST_DSN")
 	runs, _ := strconv.Atoi(os.Getenv("RUNS"))
 	step, _ := strconv.Atoi(os.Getenv("STEP"))
+
 	ctx := context.Background()
 
 	P, err := godror.ParseDSN(testConStr)
@@ -31,11 +26,9 @@ func main() {
 		log.Fatalf("%q: %+v", testConStr, err)
 	}
 
-	standaloneConnection = P.StandaloneConnection
-
 	fmt.Printf(
 		"connect using: standaloneConnection=%v, maxSessions=%v\n",
-		standaloneConnection, P.MaxSessions,
+		P.StandaloneConnection, P.MaxSessions,
 	)
 
 	db := sql.OpenDB(godror.NewConnector(P))
@@ -46,22 +39,19 @@ func main() {
 		log.Fatal(err)
 	}
 
+	cx, err := db.Conn(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cx.Close()
+
 	var m runtime.MemStats
 	pid := os.Getpid()
 	for loopCnt := 0; loopCnt < runs; loopCnt++ {
-		var wg sync.WaitGroup
-		wg.Add(parallel)
-
-		for i := 0; i < parallel; i++ {
-			go func(wg *sync.WaitGroup) {
-				defer wg.Done()
-				err := callObjectType(ctx, db)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}(&wg)
+		err = callObjectType(ctx, cx)
+		if err != nil {
+			log.Fatal(err)
 		}
-		wg.Wait()
 
 		if loopCnt%step == 0 {
 			runtime.ReadMemStats(&m)
@@ -79,26 +69,10 @@ func main() {
 	}
 }
 
-func callObjectType(ctx context.Context, db *sql.DB) error {
-	cx, err := db.Conn(ctx)
+func callObjectType(ctx context.Context, cx *sql.Conn) error {
+	objType, err := godror.GetObjectType(ctx, cx, "TEST_TYPE")
 	if err != nil {
 		return err
-	}
-	defer cx.Close()
-
-	tx, err := cx.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Commit()
-
-	objType, err := godror.GetObjectType(ctx, tx, "TEST_TYPE")
-	if err != nil {
-		return err
-	}
-
-	if !standaloneConnection {
-		defer objType.Close()
 	}
 
 	obj, err := objType.NewObject()
@@ -111,7 +85,7 @@ func callObjectType(ctx context.Context, db *sql.DB) error {
 	params := []interface{}{
 		sql.Named("rec", sql.Out{Dest: &rec, In: true}),
 	}
-	_, err = tx.ExecContext(ctx, `begin test_pkg_sample.test_record_in(:rec); end;`, params...)
+	_, err = cx.ExecContext(ctx, `begin test_pkg_sample.test_record_in(:rec); end;`, params...)
 
 	return err
 }

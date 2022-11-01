@@ -15,4 +15,4 @@ docker-run:
 .PHONY: odpi-parse
 odpi-parse:
 	DPI_DEBUG_LEVEL=38 RUNS=1 STEP=1 go run main.go 2> odpi.log
-	python3 odpi-parse.py odpi.log
+	python3 mem_leak.py odpi.log
