@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -8,13 +9,13 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"time"
 
 	"github.com/godror/godror"
-	"github.com/shirou/gopsutil/process"
 )
 
 func main() {
+	//godror.SetLogger(godror.NewLogfmtLogger(os.Stdout))
+
 	testConStr := os.Getenv("GODROR_TEST_DSN")
 	runs, _ := strconv.Atoi(os.Getenv("RUNS"))
 	step, _ := strconv.Atoi(os.Getenv("STEP"))
@@ -47,26 +48,33 @@ func main() {
 
 	var m runtime.MemStats
 	pid := os.Getpid()
-	for loopCnt := 0; loopCnt < runs; loopCnt++ {
+
+	loopCnt := 0
+	printStats := func() {
+		runtime.GC()
+		runtime.ReadMemStats(&m)
+		log.Printf("Alloc: %.3f MiB, Heap: %.3f MiB, Sys: %.3f MiB, NumGC: %d\n",
+			float64(m.Alloc)/1024/1024, float64(m.HeapInuse)/1024/1024, float64(m.Sys)/1024/1024, m.NumGC)
+
+		rss, err := readMem(int32(pid))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("%d; process memory (rss): %.3f MiB\n", loopCnt, float64(rss)/1024/1024)
+
+	}
+
+	for ; loopCnt < runs; loopCnt++ {
 		err = callObjectType(ctx, cx)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		if loopCnt%step == 0 {
-			runtime.ReadMemStats(&m)
-			log.Printf("Alloc: %.3f MiB, Heap: %.3f MiB, Sys: %.3f MiB, NumGC: %d\n",
-				float64(m.Alloc)/1024/1024, float64(m.HeapInuse)/1024/1024, float64(m.Sys)/1024/1024, m.NumGC)
-
-			rss, err := readMem(int32(pid))
-			if err != nil {
-				log.Fatal(err)
-			}
-			log.Printf("%d; process memory (rss): %.3f MiB\n", loopCnt, float64(rss)/1024/1024)
-
-			time.Sleep(100 * time.Millisecond)
+			printStats()
 		}
 	}
+	printStats()
 }
 
 func callObjectType(ctx context.Context, cx *sql.Conn) error {
@@ -119,18 +127,32 @@ func createTypes(ctx context.Context, db *sql.DB) error {
 }
 
 func readMem(pid int32) (uint64, error) {
-	p, err := process.NewProcess(pid)
+	b, err := os.ReadFile("/proc/" + strconv.FormatInt(int64(pid), 10) + "/status")
 	if err != nil {
 		return 0, err
 	}
-
-	m, err := p.MemoryInfo()
-	if err != nil {
-		return 0, err
+	if i := bytes.Index(b, []byte("\nRssAnon:")); i >= 0 {
+		b = b[i+1+3+4+1+1:]
+		if i = bytes.IndexByte(b, '\n'); i >= 0 {
+			b = b[:i]
+			var n uint64
+			var u string
+			_, err := fmt.Sscanf(string(b), "%d %s", &n, &u)
+			if err != nil {
+				return 0, fmt.Errorf("%s: %w", string(b), err)
+			}
+			switch u {
+			case "kB":
+				n <<= 10
+			case "MB":
+				n <<= 20
+			case "GB":
+				n <<= 30
+			}
+			return n, nil
+		}
 	}
-
-	//fmt.Println(m)
-	return m.RSS, nil
+	return 0, nil
 }
 
 type MyObject struct {
