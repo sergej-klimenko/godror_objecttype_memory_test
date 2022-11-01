@@ -2,7 +2,7 @@ module godror_test
 
 go 1.17
 
-// replace github.com/godror/godror => ../github.com/godror/godror
+//replace github.com/godror/godror => ../github.com/godror/godror
 
 require (
 	github.com/godror/godror v0.34.0

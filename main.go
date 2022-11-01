@@ -15,7 +15,10 @@ import (
 	"github.com/shirou/gopsutil/process"
 )
 
-var parallel = 1
+var (
+	parallel             = 1
+	standaloneConnection = false
+)
 
 func main() {
 	testConStr := os.Getenv("GODROR_TEST_DSN")
@@ -27,6 +30,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("%q: %+v", testConStr, err)
 	}
+
+	standaloneConnection = P.StandaloneConnection
+
+	fmt.Printf(
+		"connect using: standaloneConnection=%v, maxSessions=%v\n",
+		standaloneConnection, P.MaxSessions,
+	)
 
 	db := sql.OpenDB(godror.NewConnector(P))
 	defer db.Close()
@@ -86,7 +96,10 @@ func callObjectType(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer objType.Close()
+
+	if !standaloneConnection {
+		defer objType.Close()
+	}
 
 	obj, err := objType.NewObject()
 	if err != nil {
